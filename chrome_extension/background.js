@@ -46,14 +46,15 @@ function extractVideoId(url) {
 async function broadcastStatus(url, status, payload = {}) {
     try {
         const videoId = extractVideoId(url);
-        if (!videoId) return;
+        // If AUTH_EXPIRED, we might not have a video ID context if it failed generically, 
+        // but typically we do. Even if not, we can broadcast to all YT tabs.
 
         const allYoutubeTabs = await chrome.tabs.query({ url: "*://*.youtube.com/*" });
         for (const tab of allYoutubeTabs) {
-            // Check if tab is displaying the same video
-            if (tab.url && extractVideoId(tab.url) === videoId) {
+            // Check if tab is displaying the same video or if it's a generic auth error
+            if ((videoId && tab.url && extractVideoId(tab.url) === videoId) || status === 'AUTH_EXPIRED') {
                 chrome.tabs.sendMessage(tab.id, {
-                    type: "INFOGRAPHIC_UPDATE",
+                    type: status === 'AUTH_EXPIRED' ? 'AUTH_EXPIRED' : "INFOGRAPHIC_UPDATE",
                     videoId: videoId,
                     status: status,
                     ...payload
@@ -66,6 +67,7 @@ async function broadcastStatus(url, status, payload = {}) {
 }
 
 async function updateState(videoId, newState) {
+    if (!videoId) return;
     const result = await chrome.storage.local.get(['infographicStates']);
     const states = result.infographicStates || {};
     states[videoId] = newState;
@@ -76,6 +78,17 @@ async function handleGenerateInfographic(url, sendResponse) {
     const videoId = extractVideoId(url);
     if (!videoId) {
         sendResponse({ success: false, error: 'Invalid YouTube URL' });
+        return;
+    }
+
+    // Get Auth
+    const storage = await chrome.storage.local.get(['auth']);
+    const auth = storage.auth;
+
+    if (!auth || !auth.cookie || !auth.at_token) {
+        const err = 'Authentication missing. Please connect using the panel in the bottom right corner of the YouTube page.';
+        broadcastStatus(url, 'AUTH_EXPIRED');
+        sendResponse({ success: false, error: err });
         return;
     }
 
@@ -94,8 +107,23 @@ async function handleGenerateInfographic(url, sendResponse) {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ youtube_url: url })
+            body: JSON.stringify({
+                youtube_url: url,
+                auth: {
+                    cookie: auth.cookie,
+                    at_token: auth.at_token
+                }
+            })
         });
+
+        if (response.status === 401 || response.status === 403) {
+            console.warn('Authentication failed. Clearing credentials.');
+            await chrome.storage.local.remove('auth');
+            await updateState(videoId, { status: 'FAILED', error: 'Authentication Expired' }); // Reset state
+            broadcastStatus(url, 'AUTH_EXPIRED');
+            sendResponse({ success: false, error: 'Authentication Expired' });
+            return;
+        }
 
         if (!response.ok) {
             const errorText = await response.text();

@@ -33,8 +33,21 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
                 print(f"Received request for URL: {youtube_url}")
                 
-                # Logic from usage_example.py
-                client = NotebookLMClient(headers=HEADERS, at_token=AT_TOKEN)
+                 # Logic from usage_example.py
+                req_headers = HEADERS.copy()
+                req_token = AT_TOKEN
+                
+                if 'auth' in data:
+                    print("Using authentication from request")
+                    req_headers['cookie'] = data['auth'].get('cookie')
+                    req_token = data['auth'].get('at_token')
+                    print(f"DEBUG: Cookie received: {req_headers['cookie'][:20]}...")
+                    print(f"DEBUG: Token received: {req_token[:20]}...")
+                else:
+                    print("Using hardcoded authentication")
+                    print(f"DEBUG: Hardcoded Cookie prefix: {req_headers.get('cookie', '')[:20]}...")
+
+                client = NotebookLMClient(headers=req_headers, at_token=req_token)
                 
                 # 1. Create Notebook
                 print("Creating Notebook...")
